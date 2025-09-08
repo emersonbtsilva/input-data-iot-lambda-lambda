@@ -1,0 +1,8 @@
+### IGNORANDO VENV
+venv/
+.vscode/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+terraform/

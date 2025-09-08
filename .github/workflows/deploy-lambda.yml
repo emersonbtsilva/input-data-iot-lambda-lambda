@@ -1,0 +1,75 @@
+name: "Lambda Deploy"
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: "arn:aws:iam::769293261153:role/github-pipeline-emersonbtsilva-infra"
+          role-session-name: Lambda-Deploy-${{ github.repository_owner }}-${{ github.event.repository.name }}
+          aws-region: "us-east-1"
+
+      - name: Extract Lambda name from repository
+        id: lambda-name
+        run: |
+          # Remove o sufixo "-lambda" do nome do repositório para obter o nome da função
+          REPO_NAME="${{ github.event.repository.name }}"
+          LAMBDA_NAME=${REPO_NAME%-lambda}
+          echo "lambda_name=$LAMBDA_NAME" >> $GITHUB_OUTPUT
+          echo "📝 Lambda function name: $LAMBDA_NAME"
+
+      - name: Install dependencies
+        run: |
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt -t .
+          fi
+
+      - name: Package Lambda
+        run: |
+          # Remove arquivos desnecessários
+          rm -rf __pycache__ .git .github *.md .gitignore
+          
+          # Criar ZIP com todo o código
+          zip -r lambda_function.zip . -x "*.pyc" "*.pyo" "*/__pycache__/*" ".git/*" ".github/*"
+          
+          echo "📦 Lambda package created: lambda_function.zip"
+          ls -la lambda_function.zip
+
+      - name: Deploy to AWS Lambda
+        run: |
+          LAMBDA_NAME="${{ steps.lambda-name.outputs.lambda_name }}"
+          
+          echo "🚀 Deploying to Lambda function: $LAMBDA_NAME"
+          
+          # Verificar se a função Lambda existe
+          if aws lambda get-function --function-name $LAMBDA_NAME >/dev/null 2>&1; then
+            echo "✅ Lambda function exists, updating code..."
+            aws lambda update-function-code \
+              --function-name $LAMBDA_NAME \
+              --zip-file fileb://lambda_function.zip
+            
+            echo "✅ Lambda function updated successfully!"
+          else
+            echo "❌ Lambda function '$LAMBDA_NAME' not found."
+            echo "💡 Make sure the Lambda was created via the infrastructure repository first."
+            exit 1
+          fi
