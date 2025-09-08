@@ -12,8 +12,8 @@ logger.setLevel(logging.INFO)
 twinmaker = boto3.client("iottwinmaker")
 
 # Variáveis de ambiente da Lambda
-WORKSPACE_ID = os.getenv("WORKSPACE_ID")    # ID do workspace TwinMaker
-ENTITY_ID = os.getenv("ENTITY_ID")          # ID da entidade a ser atualizada
+WORKSPACE_ID = os.getenv("WORKSPACE_ID")        # ID do workspace TwinMaker
+ENTITY_ID = os.getenv("ENTITY_ID")              # ID da entidade a ser atualizada
 COMPONENT_TYPE_ID = os.getenv("COMPONENT_TYPE_ID")  # Tipo do componente
 COMPONENT_NAME = os.getenv("COMPONENT_NAME")        # Nome do componente na entidade
 
@@ -31,10 +31,15 @@ def lambda_handler(event, context):
         property_updates = {}
         for prop in PROPERTIES:
             if prop == "timestamp":
-                value = datetime.now(timezone.utc).isoformat()
+                # Garante timestamp válido
+                value = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+            elif prop == "status":
+                # Garante que status nunca seja vazio
+                value = event.get(prop) or "OFF"
             else:
                 value = event.get(prop)
 
+            # Define o tipo correto para o TwinMaker
             if isinstance(value, (int, float)):
                 val_dict = {"value": {"doubleValue": value}}
             else:
@@ -45,6 +50,7 @@ def lambda_handler(event, context):
         # Atualiza a entidade no TwinMaker
         response = twinmaker.update_component(
             workspaceId=WORKSPACE_ID,
+            entityId=ENTITY_ID,               # Essencial
             componentTypeId=COMPONENT_TYPE_ID,
             componentName=COMPONENT_NAME,
             propertyUpdates=property_updates
