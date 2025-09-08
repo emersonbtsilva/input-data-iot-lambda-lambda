@@ -24,6 +24,16 @@ def lambda_handler(event, context):
     Recebe dados do mock e atualiza o TwinMaker
     """
     logger.info("Received event: %s", json.dumps(event))
+    
+    # Se veio do API Gateway, o body está como string
+    body = event.get("body")
+    if body:
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError:
+            data = {}
+    else:
+        data = event  # fallback se já estiver no formato certo
 
     try:
         # Cria dict de atualizações de propriedades
@@ -32,9 +42,9 @@ def lambda_handler(event, context):
             if prop == "timestamp":
                 value = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
             elif prop == "status":
-                value = event.get(prop) or "OFF"
+                value = data.get(prop) or "OFF"
             else:
-                value = event.get(prop) or 0
+                value = data.get(prop) or 0
 
             if isinstance(value, (int, float)):
                 property_updates[prop] = {"value": {"doubleValue": value}}
@@ -56,7 +66,7 @@ def lambda_handler(event, context):
 
         return {
             "statusCode": 200,
-            "body": json.dumps({"message": "Success", "input": event})
+            "body": json.dumps({"message": "Success", "input": data})
         }
 
     except Exception as e:
