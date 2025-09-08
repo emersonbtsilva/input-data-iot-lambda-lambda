@@ -4,16 +4,16 @@ import boto3
 import os
 from datetime import datetime, timezone
 
-# Configura logger
+# Logger
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-# Cliente do TwinMaker
+# Cliente TwinMaker
 twinmaker = boto3.client("iottwinmaker")
 
-# Variáveis de ambiente da Lambda
+# Variáveis de ambiente
 WORKSPACE_ID = os.getenv("WORKSPACE_ID")        # ID do workspace TwinMaker
-ENTITY_ID = os.getenv("ENTITY_ID")              # ID da entidade a ser atualizada
+ENTITY_ID = os.getenv("ENTITY_ID")              # ID da entidade
 COMPONENT_TYPE_ID = os.getenv("COMPONENT_TYPE_ID")  # Tipo do componente
 COMPONENT_NAME = os.getenv("COMPONENT_NAME")        # Nome do componente na entidade
 
@@ -22,24 +22,20 @@ PROPERTIES = ["temperature", "humidity", "status", "timestamp"]
 
 def lambda_handler(event, context):
     """
-    Lambda que recebe dados do mock e atualiza múltiplas propriedades no TwinMaker.
+    Recebe dados do mock e atualiza o TwinMaker
     """
     logger.info("Received event: %s", json.dumps(event))
 
     try:
-        # Cria dict de atualizações de propriedades
         property_updates = {}
         for prop in PROPERTIES:
             if prop == "timestamp":
-                # Garante timestamp válido
                 value = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
             elif prop == "status":
-                # Garante que status nunca seja vazio
                 value = event.get(prop) or "OFF"
             else:
                 value = event.get(prop)
 
-            # Define o tipo correto para o TwinMaker
             if isinstance(value, (int, float)):
                 val_dict = {"value": {"doubleValue": value}}
             else:
@@ -47,10 +43,9 @@ def lambda_handler(event, context):
 
             property_updates[prop] = val_dict
 
-        # Atualiza a entidade no TwinMaker
         response = twinmaker.update_component(
             workspaceId=WORKSPACE_ID,
-            entityId=ENTITY_ID,               # Essencial
+            entityId=ENTITY_ID,
             componentTypeId=COMPONENT_TYPE_ID,
             componentName=COMPONENT_NAME,
             propertyUpdates=property_updates
