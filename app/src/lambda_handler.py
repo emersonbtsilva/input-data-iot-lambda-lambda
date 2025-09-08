@@ -34,12 +34,12 @@ def lambda_handler(event, context):
             elif prop == "status":
                 value = event.get(prop) or "OFF"
             else:
-                value = event.get(prop)
+                value = event.get(prop) or 0
 
             if isinstance(value, (int, float)):
-                property_updates[prop] = {"doubleValue": value}
+                property_updates[prop] = {"value": {"doubleValue": value}}
             else:
-                property_updates[prop] = {"stringValue": str(value)}
+                property_updates[prop] = {"value": {"stringValue": str(value)}}
 
         # Atualiza a entidade no TwinMaker
         response = twinmaker.update_entity(
