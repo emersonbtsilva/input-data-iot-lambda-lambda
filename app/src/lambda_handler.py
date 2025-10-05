@@ -3,12 +3,12 @@ import json
 import os
 from datetime import datetime, timezone
 
-# --- Clientes AWS (inicializados fora para performance) ---
+# --- Clientes AWS ---
 twinmaker_client = boto3.client('iottwinmaker')
 dynamodb_resource = boto3.resource('dynamodb')
 s3_client = boto3.client('s3')
 
-# --- Variáveis de Ambiente (configure na sua Lambda) ---
+# --- Variáveis de Ambiente ---
 WORKSPACE_ID = os.environ["TWINMAKER_WORKSPACE_ID"]
 DYNAMODB_TABLE_NAME = os.environ["DYNAMODB_TABLE_NAME"]
 S3_BUCKET_NAME = os.environ["S3_BUCKET_NAME"]
@@ -16,10 +16,6 @@ TWINMAKER_COMPONENT_NAME = os.environ["TWINMAKER_COMPONENT_NAME"]
 ENTITY_ID = os.environ["TWINMAKER_ENTITY_ID"]
 
 def lambda_handler(event, context):
-    """
-    Lambda focada para o MVP do Gêmeo Digital.
-    Recebe dados do IoT Core e distribui para TwinMaker, DynamoDB e S3.
-    """
     print(f"Evento recebido: {json.dumps(event)}")
 
     # 1. Extrair e Validar Dados do Evento
@@ -28,27 +24,34 @@ def lambda_handler(event, context):
         topic = event['topic']
         property_name = topic.split('/')[-1]
         
-        # Gera timestamps uma única vez
         now_utc = datetime.now(timezone.utc)
         timestamp_iso = now_utc.isoformat()
-        timestamp_epoch_str = str(int(now_utc.timestamp()))
         valor_booleano = bool(value)
 
     except (KeyError, IndexError) as e:
         print(f"ERRO CRÍTICO: Evento de entrada inválido: {e}")
-        return # Para a execução aqui se o evento for inválido
-
-    # --- Cada bloco abaixo é independente. Uma falha não impede os outros de rodarem. ---
+        return
 
     # 2. Atualiza o estado no AWS IoT TwinMaker (Para o Grafana)
+    #    *** ESTE BLOCO FOI CORRIGIDO ***
     try:
-        twinmaker_client.batch_put_property_values(
-            workspaceId=WORKSPACE_ID,
-            entries=[{
+        # A API batch_put_property_values espera uma estrutura diferente.
+        # Criamos a referência completa da propriedade e o valor separado.
+        property_entry = {
+            'entityPropertyReference': {
                 'entityId': ENTITY_ID,
                 'componentName': TWINMAKER_COMPONENT_NAME,
-                'properties': { property_name: { 'value': {'booleanValue': valor_booleano}, 'time': timestamp_epoch_str } }
+                'propertyName': property_name
+            },
+            'propertyValues': [{
+                'value': {'booleanValue': valor_booleano},
+                'time': now_utc.isoformat() # A API prefere o formato ISO 8601
             }]
+        }
+
+        twinmaker_client.batch_put_property_values(
+            workspaceId=WORKSPACE_ID,
+            entries=[property_entry]
         )
         print(f"Sucesso: TwinMaker atualizado para '{property_name}'.")
     except Exception as e:
@@ -70,8 +73,7 @@ def lambda_handler(event, context):
 
     # 4. Salva o histórico em um Bucket S3 (Para o Lookout for Equipment)
     try:
-        # Particiona os dados por data para facilitar a consulta futura
-        s3_key = f"dados-atuadores/{now_utc.year}/{now_utc.month}/{now_utc.day}/{property_name}-{timestamp_epoch_str}.json"
+        s3_key = f"dados-atuadores/{now_utc.year}/{now_utc.month}/{now_utc.day}/{property_name}-{int(now_utc.timestamp())}.json"
         s3_client.put_object(
             Bucket=S3_BUCKET_NAME,
             Key=s3_key,
