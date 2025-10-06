@@ -9,14 +9,24 @@ dynamodb_resource = boto3.resource('dynamodb')
 s3_client = boto3.client('s3')
 
 # --- Variáveis de Ambiente ---
-# Note que a Lambda precisa de menos variáveis quando chamada pelo TwinMaker,
-# pois ele já envia os IDs no evento.
+
 WORKSPACE_ID = os.environ.get("TWINMAKER_WORKSPACE_ID")
 DYNAMODB_TABLE_NAME = os.environ.get("DYNAMODB_TABLE_NAME")
 S3_BUCKET_NAME = os.environ.get("S3_BUCKET_NAME")
 
 def write_to_dynamo(entity_id, property_name, timestamp_iso, value):
-    """Função auxiliar para escrever no DynamoDB."""
+    """
+    Escreve um registro no DynamoDB.
+
+    Args:
+        entity_id (str): ID da entidade do sensor.
+        property_name (str): Nome da propriedade do sensor.
+        timestamp_iso (str): Timestamp em formato ISO 8601 (UTC).
+        value (bool): Valor booleano a ser salvo.
+
+    Returns:
+        None
+    """
     try:
         table = dynamodb_resource.Table(DYNAMODB_TABLE_NAME)
         table.put_item(Item={'SensorID': f"{entity_id}:{property_name}", 'Timestamp': timestamp_iso, 'Valor': value})
@@ -25,7 +35,18 @@ def write_to_dynamo(entity_id, property_name, timestamp_iso, value):
         print(f"AVISO (dataWriter): Falha ao salvar no DynamoDB: {e}")
 
 def write_to_s3(entity_id, property_name, timestamp_iso, value):
-    """Função auxiliar para escrever no S3."""
+    """
+    Escreve um registro no S3 em formato JSON.
+
+    Args:
+        entity_id (str): ID da entidade do sensor.
+        property_name (str): Nome da propriedade do sensor.
+        timestamp_iso (str): Timestamp em formato ISO 8601 (UTC).
+        value (bool): Valor booleano a ser salvo.
+
+    Returns:
+        None
+    """
     try:
         now_utc = datetime.fromisoformat(timestamp_iso.replace('Z', '+00:00'))
         s3_key = f"dados-atuadores/{now_utc.year}/{now_utc.month}/{now_utc.day}/{property_name}-{int(now_utc.timestamp())}.json"
@@ -39,9 +60,20 @@ def write_to_s3(entity_id, property_name, timestamp_iso, value):
 
 def lambda_handler(event, context):
     """
-    Função inteligente que atua como despachante:
-    - Se chamada pelo IoT Core, ela aciona o TwinMaker.
-    - Se chamada pelo TwinMaker (dataWriter), ela executa a escrita dos dados.
+    Função principal Lambda para integração entre IoT Core, TwinMaker e persistência de dados.
+
+    Args:
+        event (dict): Evento recebido pela Lambda. Estrutura varia conforme origem (IoT Core, TwinMaker, etc).
+        context (object): Contexto de execução Lambda (não utilizado).
+
+    Returns:
+        dict: 
+            - Se chamada pelo TwinMaker (dataWriter):
+                {"errorEntries": list}
+            - Se chamada pelo IoT Core:
+                {"statusCode": int, "body": str}
+            - Se chamada por outros (ex: dataReader):
+                {"propertyValues": list, "nextToken": None}
     """
     print(f"Evento recebido: {json.dumps(event)}")
 
