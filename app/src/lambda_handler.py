@@ -9,11 +9,11 @@ dynamodb_resource = boto3.resource('dynamodb')
 s3_client = boto3.client('s3')
 
 # --- Variáveis de Ambiente ---
-
 WORKSPACE_ID = os.environ.get("TWINMAKER_WORKSPACE_ID")
 DYNAMODB_TABLE_NAME = os.environ.get("DYNAMODB_TABLE_NAME")
 S3_BUCKET_NAME = os.environ.get("S3_BUCKET_NAME")
 
+# --- Funções Auxiliares ---
 def write_to_dynamo(entity_id, property_name, timestamp_iso, value):
     """
     Escreve um registro no DynamoDB.
@@ -58,6 +58,7 @@ def write_to_s3(entity_id, property_name, timestamp_iso, value):
     except Exception as e:
         print(f"AVISO (dataWriter): Falha ao salvar no S3: {e}")
 
+# --- Função Principal ---
 def lambda_handler(event, context):
     """
     Função principal Lambda para integração entre IoT Core, TwinMaker e persistência de dados.
@@ -67,7 +68,7 @@ def lambda_handler(event, context):
         context (object): Contexto de execução Lambda (não utilizado).
 
     Returns:
-        dict: 
+        dict:
             - Se chamada pelo TwinMaker (dataWriter):
                 {"errorEntries": list}
             - Se chamada pelo IoT Core:
@@ -78,44 +79,33 @@ def lambda_handler(event, context):
     print(f"Evento recebido: {json.dumps(event)}")
 
     # --- CAMINHO 1: A CHAMADA VEM DO TWINMAKER (dataWriter) ---
-    # O evento do dataWriter tem uma estrutura específica, como a chave "propertyValues"
-    if "propertyValues" in event and event.get('requestType') == 'WRITE':
+    # A forma correta de identificar o dataWriter é apenas pela presença da chave "propertyValues",
+    # pois o "requestType" não vem neste tipo de evento.
+    if "propertyValues" in event and "topic" not in event:
         print("Chamada interna do TwinMaker (dataWriter) detectada.")
         try:
-            # O evento do dataWriter vem como uma lista de propriedades para escrever
             for prop_entry in event['propertyValues']:
                 entity_id = prop_entry['entityPropertyReference']['entityId']
                 property_name = prop_entry['entityPropertyReference']['propertyName']
-                
-                # Para cada propriedade, pode haver múltiplos valores (pontos no tempo)
                 for value_entry in prop_entry['propertyValues']:
                     valor_booleano = value_entry['value']['booleanValue']
                     timestamp_iso = value_entry['time']
-                    
-                    # Executa a escrita real nos bancos de dados
                     write_to_dynamo(entity_id, property_name, timestamp_iso, valor_booleano)
                     write_to_s3(entity_id, property_name, timestamp_iso, valor_booleano)
-            
-            # Retorna o formato de sucesso que o TwinMaker espera
             return {"errorEntries": []}
         except Exception as e:
             print(f"ERRO no fluxo dataWriter: {e}")
             return {"errorEntries": [{"error": {"code": "INTERNAL_FAILURE", "message": str(e)}, "entryId": "error"}]}
 
     # --- CAMINHO 2: A CHAMADA VEM DO IOT CORE (Node-RED) ---
-    # O evento do IoT Core tem a chave "topic" que estamos usando
     elif "topic" in event:
         print("Chamada do IoT Core detectada.")
         try:
-            # Pega os dados das variáveis de ambiente para este fluxo
             entity_id = os.environ["TWINMAKER_ENTITY_ID"]
             component_name = os.environ["TWINMAKER_COMPONENT_NAME"]
-            
             value, topic = event['value'], event['topic']
             property_name = topic.split('/')[-1]
             timestamp_iso, valor_booleano = datetime.now(timezone.utc).isoformat(), bool(value)
-            
-            # A única tarefa é chamar o TwinMaker, que vai chamar esta mesma Lambda de volta
             twinmaker_client.batch_put_property_values(
                 workspaceId=WORKSPACE_ID,
                 entries=[{
@@ -128,9 +118,8 @@ def lambda_handler(event, context):
         except Exception as e:
             print(f"ERRO no fluxo IoT Core: {e}")
             return {'statusCode': 500, 'body': json.dumps(f"Erro ao chamar o TwinMaker: {e}")}
-            
+
     # --- CAMINHO 3: Outros tipos de chamada (ex: dataReader) ---
     else:
         print("Chamada não reconhecida (provavelmente dataReader), retornando sucesso vazio.")
-        # Para o dataReader, a resposta esperada é um pouco diferente
         return {"propertyValues": [], "nextToken": None}
