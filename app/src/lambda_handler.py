@@ -3,50 +3,26 @@ import json
 import os
 from datetime import datetime, timezone
 
-# --- Clientes AWS ---
+# --- Clientes e Variáveis de Ambiente ---
 twinmaker_client = boto3.client('iottwinmaker')
 dynamodb_resource = boto3.resource('dynamodb')
 s3_client = boto3.client('s3')
 
-# --- Variáveis de Ambiente ---
 WORKSPACE_ID = os.environ.get("TWINMAKER_WORKSPACE_ID")
 DYNAMODB_TABLE_NAME = os.environ.get("DYNAMODB_TABLE_NAME")
 S3_BUCKET_NAME = os.environ.get("S3_BUCKET_NAME")
 
-# --- Funções Auxiliares ---
+# --- Funções Auxiliares (sem alterações) ---
 def write_to_dynamo(entity_id, property_name, timestamp_iso, value):
-    """
-    Escreve um registro no DynamoDB.
-
-    Args:
-        entity_id (str): ID da entidade do sensor.
-        property_name (str): Nome da propriedade do sensor.
-        timestamp_iso (str): Timestamp em formato ISO 8601 (UTC).
-        value (bool): Valor booleano a ser salvo.
-
-    Returns:
-        None
-    """
     try:
         table = dynamodb_resource.Table(DYNAMODB_TABLE_NAME)
         table.put_item(Item={'SensorID': f"{entity_id}:{property_name}", 'Timestamp': timestamp_iso, 'Valor': value})
         print(f"Sucesso (dataWriter): Histórico salvo no DynamoDB para '{property_name}'.")
     except Exception as e:
         print(f"AVISO (dataWriter): Falha ao salvar no DynamoDB: {e}")
+        raise e # Propaga o erro para ser capturado no handler
 
 def write_to_s3(entity_id, property_name, timestamp_iso, value):
-    """
-    Escreve um registro no S3 em formato JSON.
-
-    Args:
-        entity_id (str): ID da entidade do sensor.
-        property_name (str): Nome da propriedade do sensor.
-        timestamp_iso (str): Timestamp em formato ISO 8601 (UTC).
-        value (bool): Valor booleano a ser salvo.
-
-    Returns:
-        None
-    """
     try:
         now_utc = datetime.fromisoformat(timestamp_iso.replace('Z', '+00:00'))
         s3_key = f"dados-atuadores/{now_utc.year}/{now_utc.month}/{now_utc.day}/{property_name}-{int(now_utc.timestamp())}.json"
@@ -57,45 +33,52 @@ def write_to_s3(entity_id, property_name, timestamp_iso, value):
         print(f"Sucesso (dataWriter): Histórico salvo no S3 em '{s3_key}'.")
     except Exception as e:
         print(f"AVISO (dataWriter): Falha ao salvar no S3: {e}")
+        raise e # Propaga o erro para ser capturado no handler
 
 # --- Função Principal ---
 def lambda_handler(event, context):
-    """
-    Função principal Lambda para integração entre IoT Core, TwinMaker e persistência de dados.
-
-    Args:
-        event (dict): Evento recebido pela Lambda. Estrutura varia conforme origem (IoT Core, TwinMaker, etc).
-        context (object): Contexto de execução Lambda (não utilizado).
-
-    Returns:
-        dict:
-            - Se chamada pelo TwinMaker (dataWriter):
-                {"errorEntries": list}
-            - Se chamada pelo IoT Core:
-                {"statusCode": int, "body": str}
-            - Se chamada por outros (ex: dataReader):
-                {"propertyValues": list, "nextToken": None}
-    """
     print(f"Evento recebido: {json.dumps(event)}")
 
     # --- CAMINHO 1: A CHAMADA VEM DO TWINMAKER (dataWriter) ---
-    # A forma correta de identificar o dataWriter é apenas pela presença da chave "propertyValues",
-    # pois o "requestType" não vem neste tipo de evento.
+    # Simplificando a lógica para ser mais robusta.
     if "propertyValues" in event and "topic" not in event:
         print("Chamada interna do TwinMaker (dataWriter) detectada.")
         try:
-            for prop_entry in event['propertyValues']:
-                entity_id = prop_entry['entityPropertyReference']['entityId']
-                property_name = prop_entry['entityPropertyReference']['propertyName']
-                for value_entry in prop_entry['propertyValues']:
-                    valor_booleano = value_entry['value']['booleanValue']
-                    timestamp_iso = value_entry['time']
-                    write_to_dynamo(entity_id, property_name, timestamp_iso, valor_booleano)
-                    write_to_s3(entity_id, property_name, timestamp_iso, valor_booleano)
+            # O evento de batch_put_property_values sempre envia uma lista com um único item.
+            # Vamos acessar diretamente em vez de fazer um loop.
+            prop_entry = event['propertyValues'][0]
+            value_entry = prop_entry['propertyValues'][0]
+            
+            entity_id = prop_entry['entityPropertyReference']['entityId']
+            property_name = prop_entry['entityPropertyReference']['propertyName']
+            valor_booleano = value_entry['value']['booleanValue']
+            timestamp_iso = value_entry['time']
+            
+            # Executa a escrita real nos bancos de dados
+            write_to_dynamo(entity_id, property_name, timestamp_iso, valor_booleano)
+            write_to_s3(entity_id, property_name, timestamp_iso, valor_booleano)
+            
+            # Retorna o formato de sucesso que o TwinMaker espera.
             return {"errorEntries": []}
+        
         except Exception as e:
+            # Se qualquer coisa der errado, formatamos a resposta de erro EXATAMENTE como a doc pede.
             print(f"ERRO no fluxo dataWriter: {e}")
-            return {"errorEntries": [{"error": {"code": "INTERNAL_FAILURE", "message": str(e)}, "entryId": "error"}]}
+            # A documentação mostra que a resposta de erro precisa de um 'entryId'.
+            # O 'entryId' deve corresponder ao 'entryId' da requisição, mas como não o temos, usamos um genérico.
+            # O mais importante é a estrutura.
+            error_entry_id = event['propertyValues'][0].get('entryId', 'desconhecido')
+            return {
+                "errorEntries": [
+                    {
+                        "entryId": error_entry_id,
+                        "error": {
+                            "code": "INTERNAL_FAILURE",
+                            "message": f"Ocorreu um erro no conector Lambda: {str(e)}"
+                        }
+                    }
+                ]
+            }
 
     # --- CAMINHO 2: A CHAMADA VEM DO IOT CORE (Node-RED) ---
     elif "topic" in event:
@@ -103,9 +86,12 @@ def lambda_handler(event, context):
         try:
             entity_id = os.environ["TWINMAKER_ENTITY_ID"]
             component_name = os.environ["TWINMAKER_COMPONENT_NAME"]
+            
             value, topic = event['value'], event['topic']
             property_name = topic.split('/')[-1]
-            timestamp_iso, valor_booleano = datetime.now(timezone.utc).isoformat(), bool(value)
+            timestamp_iso = datetime.now(timezone.utc).isoformat()
+            valor_booleano = bool(value)
+            
             twinmaker_client.batch_put_property_values(
                 workspaceId=WORKSPACE_ID,
                 entries=[{
@@ -118,7 +104,7 @@ def lambda_handler(event, context):
         except Exception as e:
             print(f"ERRO no fluxo IoT Core: {e}")
             return {'statusCode': 500, 'body': json.dumps(f"Erro ao chamar o TwinMaker: {e}")}
-
+            
     # --- CAMINHO 3: Outros tipos de chamada (ex: dataReader) ---
     else:
         print("Chamada não reconhecida (provavelmente dataReader), retornando sucesso vazio.")
