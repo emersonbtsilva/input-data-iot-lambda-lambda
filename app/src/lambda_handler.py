@@ -20,17 +20,11 @@ S3_BUCKET_NAME = os.environ.get("S3_BUCKET_NAME")
 # --- FUNÇÕES DE ESCRITA ---
 
 def write_to_dynamo(entity_id, property_name, timestamp_iso, value):
-    """Persiste o estado de um sensor no DynamoDB de forma resiliente.
-
-    Esta função é o coração da persistência de dados para leitura rápida.
-    Quando o Node-RED envia uma 'tempestade' de atualizações simultâneas,
-    o DynamoDB pode ficar sobrecarregado e rejeitar escritas (throttling).
-
-    Para evitar a perda de dados, esta função não desiste na primeira falha.
-    Ela implementa um mecanismo de "retry com backoff exponencial": se uma
-    escrita falhar por throttling, ela espera um pouco e tenta de novo,
-    aumentando a pausa a cada nova tentativa. Isso suaviza o pico de
-    escritas e garante que os dados sejam salvos.
+    """Persiste o estado de um sensor no DynamoDB.
+    
+    Esta versão simplificada tenta escrever no DynamoDB uma única vez.
+    Se um erro ocorrer, ele será registrado e a exceção será levantada
+    para que o TwinMaker possa registrar a falha.
 
     Args:
         entity_id (str): O ID da entidade no TwinMaker (ex: 'festoEntity').
@@ -39,34 +33,18 @@ def write_to_dynamo(entity_id, property_name, timestamp_iso, value):
         value (bool): O valor booleano do sensor.
 
     Raises:
-        ClientError: Levanta a exceção original se todas as tentativas de
-                     escrita falharem, ou se ocorrer um erro diferente de
-                     throttling.
+        ClientError: Levanta a exceção se a escrita falhar.
     """
     table = dynamodb_resource.Table(DYNAMODB_TABLE_NAME)
     item_to_save = {'SensorID': f"{entity_id}:{property_name}", 'Timestamp': timestamp_iso, 'Valor': value}
     
-    max_retries = 3
-    base_delay = 0.1 # 100ms
+    try:
+        table.put_item(Item=item_to_save)
+        print(f"Sucesso (dataWriter): Histórico salvo no DynamoDB para '{property_name}'.")
+    except ClientError as e:
+        print(f"ERRO (dataWriter): Falha ao salvar no DynamoDB para '{property_name}': {e}")
+        raise e # Desiste e levanta o erro para o TwinMaker.
 
-    for attempt in range(max_retries):
-        try:
-            table.put_item(Item=item_to_save)
-            print(f"Sucesso (dataWriter): Histórico salvo no DynamoDB para '{property_name}' na tentativa {attempt + 1}.")
-            return # Sucesso! Sai da função.
-        except ClientError as e:
-            if e.response['Error']['Code'] == 'ProvisionedThroughputExceededException':
-                print(f"AVISO (dataWriter): Throttling do DynamoDB detectado na tentativa {attempt + 1}. Tentando novamente...")
-                if attempt < max_retries - 1:
-                    # Pausa com backoff exponencial: 0.1s, 0.2s, 0.4s...
-                    time.sleep(base_delay * (2 ** attempt)) 
-                else:
-                    print(f"ERRO (dataWriter): Falha ao salvar no DynamoDB para '{property_name}' após {max_retries} tentativas.")
-                    raise e # Desiste e levanta o erro.
-            else:
-                # Se for um erro diferente (ex: AccessDenied), não adianta tentar de novo.
-                print(f"ERRO (dataWriter): Erro inesperado do DynamoDB: {e}")
-                raise e
 
 def write_to_s3(entity_id, property_name, timestamp_iso, value):
     """Salva uma cópia do evento no S3 para arquivamento de longo prazo (Data Lake).
@@ -96,6 +74,7 @@ def lambda_handler(event, context):
     
     Atua como um roteador, identificando a origem da chamada (IoT Core,
     TwinMaker para escrita, ou TwinMaker para leitura) e direcionando
+
     para o fluxo de código apropriado.
     """
     print(f"Evento recebido: {json.dumps(event)}")
