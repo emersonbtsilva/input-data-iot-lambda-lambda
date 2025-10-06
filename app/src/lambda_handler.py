@@ -20,11 +20,11 @@ def write_to_dynamo(entity_id, property_name, timestamp_iso, value):
         print(f"Sucesso (dataWriter): Histórico salvo no DynamoDB para '{property_name}'.")
     except Exception as e:
         print(f"AVISO (dataWriter): Falha ao salvar no DynamoDB: {e}")
-        raise e # Propaga o erro para ser capturado no handler
+        raise e
 
 def write_to_s3(entity_id, property_name, timestamp_iso, value):
     try:
-        now_utc = datetime.fromisoformat(timestamp_iso.replace('Z', '+00:00'))
+        now_utc = datetime.fromisoformat(timestamp_iso.replace('Z', '+00:00').replace('+00:00',''))
         s3_key = f"dados-atuadores/{now_utc.year}/{now_utc.month}/{now_utc.day}/{property_name}-{int(now_utc.timestamp())}.json"
         s3_client.put_object(
             Bucket=S3_BUCKET_NAME, Key=s3_key,
@@ -33,52 +33,37 @@ def write_to_s3(entity_id, property_name, timestamp_iso, value):
         print(f"Sucesso (dataWriter): Histórico salvo no S3 em '{s3_key}'.")
     except Exception as e:
         print(f"AVISO (dataWriter): Falha ao salvar no S3: {e}")
-        raise e # Propaga o erro para ser capturado no handler
+        raise e
 
 # --- Função Principal ---
 def lambda_handler(event, context):
     print(f"Evento recebido: {json.dumps(event)}")
 
     # --- CAMINHO 1: A CHAMADA VEM DO TWINMAKER (dataWriter) ---
-    # Simplificando a lógica para ser mais robusta.
-    if "propertyValues" in event and "topic" not in event:
+    # CORREÇÃO FINAL: A condição agora busca pela chave "entries", que é o que o log real mostrou.
+    if "entries" in event and "topic" not in event:
         print("Chamada interna do TwinMaker (dataWriter) detectada.")
         try:
-            # O evento de batch_put_property_values sempre envia uma lista com um único item.
-            # Vamos acessar diretamente em vez de fazer um loop.
-            prop_entry = event['propertyValues'][0]
-            value_entry = prop_entry['propertyValues'][0]
-            
-            entity_id = prop_entry['entityPropertyReference']['entityId']
-            property_name = prop_entry['entityPropertyReference']['propertyName']
-            valor_booleano = value_entry['value']['booleanValue']
-            timestamp_iso = value_entry['time']
-            
-            # Executa a escrita real nos bancos de dados
-            write_to_dynamo(entity_id, property_name, timestamp_iso, valor_booleano)
-            write_to_s3(entity_id, property_name, timestamp_iso, valor_booleano)
+            # O loop agora itera sobre a chave correta: event['entries']
+            for entry in event['entries']:
+                entity_id = entry['entityPropertyReference']['entityId']
+                property_name = entry['entityPropertyReference']['propertyName']
+                
+                # O valor está dentro de uma lista 'propertyValues' dentro de cada 'entry'
+                value_entry = entry['propertyValues'][0]
+                valor_booleano = value_entry['value']['booleanValue']
+                timestamp_iso = value_entry['time']
+                
+                # Executa a escrita real nos bancos de dados
+                write_to_dynamo(entity_id, property_name, timestamp_iso, valor_booleano)
+                write_to_s3(entity_id, property_name, timestamp_iso, valor_booleano)
             
             # Retorna o formato de sucesso que o TwinMaker espera.
             return {"errorEntries": []}
         
         except Exception as e:
-            # Se qualquer coisa der errado, formatamos a resposta de erro EXATAMENTE como a doc pede.
             print(f"ERRO no fluxo dataWriter: {e}")
-            # A documentação mostra que a resposta de erro precisa de um 'entryId'.
-            # O 'entryId' deve corresponder ao 'entryId' da requisição, mas como não o temos, usamos um genérico.
-            # O mais importante é a estrutura.
-            error_entry_id = event['propertyValues'][0].get('entryId', 'desconhecido')
-            return {
-                "errorEntries": [
-                    {
-                        "entryId": error_entry_id,
-                        "error": {
-                            "code": "INTERNAL_FAILURE",
-                            "message": f"Ocorreu um erro no conector Lambda: {str(e)}"
-                        }
-                    }
-                ]
-            }
+            return {"errorEntries": [{"error": {"code": "INTERNAL_FAILURE", "message": f"Ocorreu um erro no conector Lambda: {str(e)}"}, "entryId": "error"}]}
 
     # --- CAMINHO 2: A CHAMADA VEM DO IOT CORE (Node-RED) ---
     elif "topic" in event:
