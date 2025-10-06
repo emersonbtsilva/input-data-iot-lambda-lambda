@@ -16,7 +16,21 @@ TWINMAKER_COMPONENT_NAME = os.environ["TWINMAKER_COMPONENT_NAME"]
 ENTITY_ID = os.environ["TWINMAKER_ENTITY_ID"]
 
 def lambda_handler(event, context):
+    """
+    Lambda inteligente para o Gêmeo Digital.
+    - Se for chamada pelo IoT Core, distribui os dados.
+    - Se for chamada de volta pelo TwinMaker, apenas confirma o recebimento.
+    """
     print(f"Evento recebido: {json.dumps(event)}")
+
+    # --- VERIFICAÇÃO DE ORIGEM ---
+    # Se as chaves 'value' e 'topic' não existirem, assumimos que é uma chamada
+    # do TwinMaker (o dataWriter). Nesse caso, apenas retornamos um sucesso vazio.
+    if 'value' not in event or 'topic' not in event:
+        print("Chamada interna do TwinMaker detectada. Encerrando com sucesso.")
+        return { "status": "succeeded" } # TwinMaker espera um JSON, não um null.
+
+    # --- FLUXO PRINCIPAL (só executa se for chamada pelo IoT Core) ---
 
     # 1. Extrair e Validar Dados do Evento
     try:
@@ -30,13 +44,10 @@ def lambda_handler(event, context):
 
     except (KeyError, IndexError) as e:
         print(f"ERRO CRÍTICO: Evento de entrada inválido: {e}")
-        return
+        return { "status": "failed", "error": str(e) }
 
     # 2. Atualiza o estado no AWS IoT TwinMaker (Para o Grafana)
-    #    *** ESTE BLOCO FOI CORRIGIDO ***
     try:
-        # A API batch_put_property_values espera uma estrutura diferente.
-        # Criamos a referência completa da propriedade e o valor separado.
         property_entry = {
             'entityPropertyReference': {
                 'entityId': ENTITY_ID,
@@ -45,17 +56,16 @@ def lambda_handler(event, context):
             },
             'propertyValues': [{
                 'value': {'booleanValue': valor_booleano},
-                'time': now_utc.isoformat() # A API prefere o formato ISO 8601
+                'time': now_utc.isoformat()
             }]
         }
-
         twinmaker_client.batch_put_property_values(
             workspaceId=WORKSPACE_ID,
             entries=[property_entry]
         )
-        print(f"Sucesso: TwinMaker atualizado para '{property_name}'.")
+        print(f"Sucesso: Chamada para o TwinMaker enviada para '{property_name}'.")
     except Exception as e:
-        print(f"AVISO: Falha ao atualizar o TwinMaker: {e}")
+        print(f"AVISO: Falha ao chamar o TwinMaker: {e}")
 
     # 3. Salva o histórico no Amazon DynamoDB
     try:
@@ -87,4 +97,4 @@ def lambda_handler(event, context):
     except Exception as e:
         print(f"AVISO: Falha ao salvar no S3: {e}")
 
-    return {'statusCode': 200, 'body': json.dumps('Processamento concluído.')}
+    return {'statusCode': 200, 'body': json.dumps('Processamento principal concluído.')}
