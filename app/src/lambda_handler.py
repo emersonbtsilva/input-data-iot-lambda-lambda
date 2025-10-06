@@ -16,23 +16,19 @@ TWINMAKER_COMPONENT_NAME = os.environ["TWINMAKER_COMPONENT_NAME"]
 ENTITY_ID = os.environ["TWINMAKER_ENTITY_ID"]
 
 def lambda_handler(event, context):
-    """
-    Lambda inteligente para o Gêmeo Digital.
-    - Se for chamada pelo IoT Core, distribui os dados.
-    - Se for chamada de volta pelo TwinMaker, apenas confirma o recebimento.
-    """
     print(f"Evento recebido: {json.dumps(event)}")
 
     # --- VERIFICAÇÃO DE ORIGEM ---
-    # Se as chaves 'value' e 'topic' não existirem, assumimos que é uma chamada
-    # do TwinMaker (o dataWriter). Nesse caso, apenas retornamos um sucesso vazio.
+    # Se for uma chamada do TwinMaker (o dataWriter), ela não terá 'value' ou 'topic'.
     if 'value' not in event or 'topic' not in event:
-        print("Chamada interna do TwinMaker detectada. Encerrando com sucesso.")
-        return { "status": "succeeded" } # TwinMaker espera um JSON, não um null.
+        print("Chamada interna do TwinMaker detectada. Encerrando com a resposta esperada.")
+        
+        # *** ESTA É A LINHA QUE FOI CORRIGIDA ***
+        # De acordo com a documentação, a resposta de sucesso para um dataWriter
+        # é um objeto JSON com uma lista vazia de "errorEntries".
+        return { "errorEntries": [] }
 
     # --- FLUXO PRINCIPAL (só executa se for chamada pelo IoT Core) ---
-
-    # 1. Extrair e Validar Dados do Evento
     try:
         value = event['value']
         topic = event['topic']
@@ -44,9 +40,9 @@ def lambda_handler(event, context):
 
     except (KeyError, IndexError) as e:
         print(f"ERRO CRÍTICO: Evento de entrada inválido: {e}")
-        return { "status": "failed", "error": str(e) }
+        return # Não deve acontecer, mas é uma salvaguarda
 
-    # 2. Atualiza o estado no AWS IoT TwinMaker (Para o Grafana)
+    # 2. Atualiza o estado no AWS IoT TwinMaker
     try:
         property_entry = {
             'entityPropertyReference': {
@@ -54,10 +50,7 @@ def lambda_handler(event, context):
                 'componentName': TWINMAKER_COMPONENT_NAME,
                 'propertyName': property_name
             },
-            'propertyValues': [{
-                'value': {'booleanValue': valor_booleano},
-                'time': now_utc.isoformat()
-            }]
+            'propertyValues': [{'value': {'booleanValue': valor_booleano}, 'time': now_utc.isoformat()}]
         }
         twinmaker_client.batch_put_property_values(
             workspaceId=WORKSPACE_ID,
@@ -66,32 +59,25 @@ def lambda_handler(event, context):
         print(f"Sucesso: Chamada para o TwinMaker enviada para '{property_name}'.")
     except Exception as e:
         print(f"AVISO: Falha ao chamar o TwinMaker: {e}")
-
+        # Mesmo que o TwinMaker falhe, continuamos para os outros serviços
+    
     # 3. Salva o histórico no Amazon DynamoDB
     try:
         table = dynamodb_resource.Table(DYNAMODB_TABLE_NAME)
         table.put_item(
-            Item={
-                'SensorID': f"{ENTITY_ID}:{property_name}",
-                'Timestamp': timestamp_iso,
-                'Valor': valor_booleano
-            }
+            Item={ 'SensorID': f"{ENTITY_ID}:{property_name}", 'Timestamp': timestamp_iso, 'Valor': valor_booleano }
         )
         print(f"Sucesso: Histórico salvo no DynamoDB para '{property_name}'.")
     except Exception as e:
         print(f"AVISO: Falha ao salvar no DynamoDB: {e}")
 
-    # 4. Salva o histórico em um Bucket S3 (Para o Lookout for Equipment)
+    # 4. Salva o histórico em um Bucket S3
     try:
         s3_key = f"dados-atuadores/{now_utc.year}/{now_utc.month}/{now_utc.day}/{property_name}-{int(now_utc.timestamp())}.json"
         s3_client.put_object(
             Bucket=S3_BUCKET_NAME,
             Key=s3_key,
-            Body=json.dumps({
-                "sensorId": f"{ENTITY_ID}:{property_name}",
-                "timestamp": timestamp_iso,
-                "value": valor_booleano
-            })
+            Body=json.dumps({ "sensorId": f"{ENTITY_ID}:{property_name}", "timestamp": timestamp_iso, "value": valor_booleano })
         )
         print(f"Sucesso: Histórico salvo no S3 em '{s3_key}'.")
     except Exception as e:
