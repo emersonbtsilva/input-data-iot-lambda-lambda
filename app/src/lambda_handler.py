@@ -50,7 +50,8 @@ def lambda_handler(event, context):
         try:
             entity_id = os.environ["TWINMAKER_ENTITY_ID"]
             component_name = os.environ["TWINMAKER_COMPONENT_NAME"]
-            value, topic = event['value'], event['topic']
+            value = event['payload']['value']
+            topic = event['topic']
             property_name = topic.split('/')[-1]
             timestamp_iso = datetime.now(timezone.utc).isoformat()
             valor_booleano = bool(value)
